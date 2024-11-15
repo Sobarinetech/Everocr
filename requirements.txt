@@ -5,3 +5,5 @@ numpy
 mss
 streamlit
 boto3
+easyocr
+pyttsx3
