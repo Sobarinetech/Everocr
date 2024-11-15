@@ -1,2 +1,7 @@
 streamlit
 pandas
+opencv-python
+numpy
+mss
+streamlit
+boto3
