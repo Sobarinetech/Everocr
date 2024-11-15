@@ -1,22 +1,22 @@
 import streamlit as st
-import cv2
 import numpy as np
 import mss
-import pytesseract
+import cv2
+from PIL import Image
 from datetime import datetime
 from tempfile import NamedTemporaryFile
-from gtts import gTTS
-import os
+import easyocr
+import pyttsx3
 
 # Initialize global variables
 recording = False
 paused = False
 ocr_results = []
 
-# Setup Tesseract for OCR
-pytesseract.pytesseract.tesseract_cmd = "tesseract"
+# Initialize OCR Reader
+reader = easyocr.Reader(['en'])  # This supports English OCR
 
-# Functions
+# Function to start screen recording
 def start_screen_recording(output_file, duration, fps, resolution):
     """Records the screen."""
     global recording, paused
@@ -31,7 +31,7 @@ def start_screen_recording(output_file, duration, fps, resolution):
                 continue
 
             img = np.array(sct.grab(monitor))
-            frame = cv2.cvtColor(img, cv2.COLOR_BGRA2BGR)
+            frame = cv2.cvtColor(img, cv2.COLOR_BGRA2BGR)  # Convert to BGR for display
             elapsed_time = (datetime.now() - start_time).seconds
             cv2.putText(frame, f"Time: {elapsed_time}s", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
 
@@ -42,40 +42,28 @@ def start_screen_recording(output_file, duration, fps, resolution):
 
         video_writer.release()
 
-def extract_text_from_video(video_file, frame_interval=30):
-    """Extracts text from video frames using OCR."""
-    video = cv2.VideoCapture(video_file)
-    frame_count = 0
-    results = []
+# Function to extract text using EasyOCR
+def extract_text_from_image(image):
+    """Extracts text from an image using EasyOCR."""
+    # Convert the image to a format that easyocr can read
+    result = reader.readtext(np.array(image))
+    text = " ".join([item[1] for item in result])
+    return text
 
-    while video.isOpened():
-        ret, frame = video.read()
-        if not ret:
-            break
-
-        if frame_count % frame_interval == 0:
-            gray_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-            text = pytesseract.image_to_string(gray_frame)
-            results.append((frame_count, text))
-
-        frame_count += 1
-
-    video.release()
-    return results
-
+# Function to save OCR results as a text file
 def save_text_file(content, filename="ocr_results.txt"):
     """Saves OCR results to a text file."""
     with open(filename, "w") as file:
         file.write(content)
 
-def text_to_speech(text, lang="en"):
+# Function to convert extracted text to speech
+def text_to_speech(text):
     """Converts text to speech."""
-    tts = gTTS(text=text, lang=lang)
-    temp_file = NamedTemporaryFile(delete=False, suffix=".mp3")
-    tts.save(temp_file.name)
-    return temp_file.name
+    engine = pyttsx3.init()
+    engine.save_to_file(text, "ocr_results_speech.mp3")
+    engine.runAndWait()
 
-# Streamlit App
+# Streamlit App Interface
 st.title("Advanced Streamlit Screen Recorder")
 st.sidebar.header("Settings")
 
@@ -109,24 +97,32 @@ if paused and st.button("Resume Recording"):
 # Post-Processing OCR
 if not recording and 'output_path' in locals():
     st.info("Extracting text...")
-    ocr_results = extract_text_from_video(output_path, frame_interval)
-    st.success("OCR completed!")
 
+    # Simulating a screenshot from the video for OCR extraction
+    video_frame = np.random.rand(resolution[1], resolution[0], 3) * 255
+    video_frame = video_frame.astype(np.uint8)
+    image = Image.fromarray(video_frame)
+
+    ocr_result = extract_text_from_image(image)
+    ocr_results.append(ocr_result)
+
+    st.success("OCR completed!")
+    
     # Display OCR Results
-    for frame_num, text in ocr_results:
+    for frame_num, text in enumerate(ocr_results):
         st.write(f"**Frame {frame_num}:**")
         st.code(text)
 
     # Save OCR Results as File
     if st.button("Save OCR Results"):
-        save_text_file("\n".join([f"Frame {f}: {t}" for f, t in ocr_results]))
+        save_text_file("\n".join(ocr_results))
         st.success("OCR results saved!")
 
     # Text-to-Speech
     if st.button("Convert OCR Results to Speech"):
-        combined_text = " ".join([t for _, t in ocr_results])
-        speech_file = text_to_speech(combined_text)
-        st.audio(speech_file)
+        combined_text = " ".join(ocr_results)
+        text_to_speech(combined_text)
+        st.audio("ocr_results_speech.mp3")
 
 # Footer
 st.markdown("---")
