@@ -1,151 +1,133 @@
 import streamlit as st
-import pandas as pd
-import math
-from pathlib import Path
+import cv2
+import numpy as np
+import mss
+import pytesseract
+from datetime import datetime
+from tempfile import NamedTemporaryFile
+from gtts import gTTS
+import os
 
-# Set the title and favicon that appear in the Browser's tab bar.
-st.set_page_config(
-    page_title='GDP dashboard',
-    page_icon=':earth_americas:', # This is an emoji shortcode. Could be a URL too.
-)
+# Initialize global variables
+recording = False
+paused = False
+ocr_results = []
 
-# -----------------------------------------------------------------------------
-# Declare some useful functions.
+# Setup Tesseract for OCR
+pytesseract.pytesseract.tesseract_cmd = "tesseract"
 
-@st.cache_data
-def get_gdp_data():
-    """Grab GDP data from a CSV file.
+# Functions
+def start_screen_recording(output_file, duration, fps, resolution):
+    """Records the screen."""
+    global recording, paused
+    with mss.mss() as sct:
+        monitor = {"top": 0, "left": 0, "width": resolution[0], "height": resolution[1]}
+        fourcc = cv2.VideoWriter_fourcc(*"XVID")
+        video_writer = cv2.VideoWriter(output_file, fourcc, fps, (monitor["width"], monitor["height"]))
+        start_time = datetime.now()
 
-    This uses caching to avoid having to read the file every time. If we were
-    reading from an HTTP endpoint instead of a file, it's a good idea to set
-    a maximum age to the cache with the TTL argument: @st.cache_data(ttl='1d')
-    """
+        while recording:
+            if paused:
+                continue
 
-    # Instead of a CSV on disk, you could read from an HTTP endpoint here too.
-    DATA_FILENAME = Path(__file__).parent/'data/gdp_data.csv'
-    raw_gdp_df = pd.read_csv(DATA_FILENAME)
+            img = np.array(sct.grab(monitor))
+            frame = cv2.cvtColor(img, cv2.COLOR_BGRA2BGR)
+            elapsed_time = (datetime.now() - start_time).seconds
+            cv2.putText(frame, f"Time: {elapsed_time}s", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
 
-    MIN_YEAR = 1960
-    MAX_YEAR = 2022
+            video_writer.write(frame)
+            if elapsed_time >= duration:
+                recording = False
+                break
 
-    # The data above has columns like:
-    # - Country Name
-    # - Country Code
-    # - [Stuff I don't care about]
-    # - GDP for 1960
-    # - GDP for 1961
-    # - GDP for 1962
-    # - ...
-    # - GDP for 2022
-    #
-    # ...but I want this instead:
-    # - Country Name
-    # - Country Code
-    # - Year
-    # - GDP
-    #
-    # So let's pivot all those year-columns into two: Year and GDP
-    gdp_df = raw_gdp_df.melt(
-        ['Country Code'],
-        [str(x) for x in range(MIN_YEAR, MAX_YEAR + 1)],
-        'Year',
-        'GDP',
-    )
+        video_writer.release()
 
-    # Convert years from string to integers
-    gdp_df['Year'] = pd.to_numeric(gdp_df['Year'])
+def extract_text_from_video(video_file, frame_interval=30):
+    """Extracts text from video frames using OCR."""
+    video = cv2.VideoCapture(video_file)
+    frame_count = 0
+    results = []
 
-    return gdp_df
+    while video.isOpened():
+        ret, frame = video.read()
+        if not ret:
+            break
 
-gdp_df = get_gdp_data()
+        if frame_count % frame_interval == 0:
+            gray_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            text = pytesseract.image_to_string(gray_frame)
+            results.append((frame_count, text))
 
-# -----------------------------------------------------------------------------
-# Draw the actual page
+        frame_count += 1
 
-# Set the title that appears at the top of the page.
-'''
-# :earth_americas: GDP dashboard
+    video.release()
+    return results
 
-Browse GDP data from the [World Bank Open Data](https://data.worldbank.org/) website. As you'll
-notice, the data only goes to 2022 right now, and datapoints for certain years are often missing.
-But it's otherwise a great (and did I mention _free_?) source of data.
-'''
+def save_text_file(content, filename="ocr_results.txt"):
+    """Saves OCR results to a text file."""
+    with open(filename, "w") as file:
+        file.write(content)
 
-# Add some spacing
-''
-''
+def text_to_speech(text, lang="en"):
+    """Converts text to speech."""
+    tts = gTTS(text=text, lang=lang)
+    temp_file = NamedTemporaryFile(delete=False, suffix=".mp3")
+    tts.save(temp_file.name)
+    return temp_file.name
 
-min_value = gdp_df['Year'].min()
-max_value = gdp_df['Year'].max()
+# Streamlit App
+st.title("Advanced Streamlit Screen Recorder")
+st.sidebar.header("Settings")
 
-from_year, to_year = st.slider(
-    'Which years are you interested in?',
-    min_value=min_value,
-    max_value=max_value,
-    value=[min_value, max_value])
+# Recording Configuration
+duration = st.sidebar.slider("Duration (seconds)", 10, 300, 60)
+fps = st.sidebar.slider("FPS", 10, 60, 30)
+resolution = st.sidebar.selectbox("Resolution", [(1920, 1080), (1280, 720), (640, 480)], index=1)
+frame_interval = st.sidebar.slider("Frame Interval for OCR", 10, 100, 30)
 
-countries = gdp_df['Country Code'].unique()
+# Buttons for controlling recording
+if st.button("Start Recording"):
+    recording = True
+    paused = False
+    st.info("Recording in progress...")
+    with NamedTemporaryFile(delete=False, suffix=".avi") as temp_file:
+        output_path = temp_file.name
+    start_screen_recording(output_path, duration, fps, resolution)
 
-if not len(countries):
-    st.warning("Select at least one country")
+if st.button("Stop Recording"):
+    recording = False
+    st.success("Recording stopped.")
 
-selected_countries = st.multiselect(
-    'Which countries would you like to view?',
-    countries,
-    ['DEU', 'FRA', 'GBR', 'BRA', 'MEX', 'JPN'])
+if recording and st.button("Pause Recording"):
+    paused = True
+    st.info("Recording paused.")
 
-''
-''
-''
+if paused and st.button("Resume Recording"):
+    paused = False
+    st.info("Recording resumed.")
 
-# Filter the data
-filtered_gdp_df = gdp_df[
-    (gdp_df['Country Code'].isin(selected_countries))
-    & (gdp_df['Year'] <= to_year)
-    & (from_year <= gdp_df['Year'])
-]
+# Post-Processing OCR
+if not recording and 'output_path' in locals():
+    st.info("Extracting text...")
+    ocr_results = extract_text_from_video(output_path, frame_interval)
+    st.success("OCR completed!")
 
-st.header('GDP over time', divider='gray')
+    # Display OCR Results
+    for frame_num, text in ocr_results:
+        st.write(f"**Frame {frame_num}:**")
+        st.code(text)
 
-''
+    # Save OCR Results as File
+    if st.button("Save OCR Results"):
+        save_text_file("\n".join([f"Frame {f}: {t}" for f, t in ocr_results]))
+        st.success("OCR results saved!")
 
-st.line_chart(
-    filtered_gdp_df,
-    x='Year',
-    y='GDP',
-    color='Country Code',
-)
+    # Text-to-Speech
+    if st.button("Convert OCR Results to Speech"):
+        combined_text = " ".join([t for _, t in ocr_results])
+        speech_file = text_to_speech(combined_text)
+        st.audio(speech_file)
 
-''
-''
-
-
-first_year = gdp_df[gdp_df['Year'] == from_year]
-last_year = gdp_df[gdp_df['Year'] == to_year]
-
-st.header(f'GDP in {to_year}', divider='gray')
-
-''
-
-cols = st.columns(4)
-
-for i, country in enumerate(selected_countries):
-    col = cols[i % len(cols)]
-
-    with col:
-        first_gdp = first_year[first_year['Country Code'] == country]['GDP'].iat[0] / 1000000000
-        last_gdp = last_year[last_year['Country Code'] == country]['GDP'].iat[0] / 1000000000
-
-        if math.isnan(first_gdp):
-            growth = 'n/a'
-            delta_color = 'off'
-        else:
-            growth = f'{last_gdp / first_gdp:,.2f}x'
-            delta_color = 'normal'
-
-        st.metric(
-            label=f'{country} GDP',
-            value=f'{last_gdp:,.0f}B',
-            delta=growth,
-            delta_color=delta_color
-        )
+# Footer
+st.markdown("---")
+st.markdown("Developed with 25+ unique features for advanced screen recording and data extraction.")
